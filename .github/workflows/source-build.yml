@@ -1,0 +1,48 @@
+name: Build repository
+run-name: Build ${{ inputs.source }} at ${{ inputs.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      source: { description: Public owner/repository, required: true, type: string }
+      sha: { description: Full commit SHA, required: true, type: string }
+      revision: { description: Deployment UUID, required: true, type: string }
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Build pinned source
+        env:
+          SOURCE: ${{ inputs.source }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          [[ "$SOURCE" =~ ^[a-zA-Z0-9-]+/[a-zA-Z0-9_.-]+$ ]]
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          docker build -t application:build "https://github.com/$SOURCE.git#$SHA"
+          docker save -o "$RUNNER_TEMP/image.tar" application:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: image }
+      - name: Publish build
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$REVISION" =~ ^[0-9a-f-]{36}$ ]]
+          target="ghcr.io/${GITHUB_REPOSITORY,,}-apps:$REVISION"
+          docker load -i image.tar
+          docker tag application:build "$target"
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$target"
