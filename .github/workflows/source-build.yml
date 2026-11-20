@@ -19,7 +19,38 @@ jobs:
         run: |
           [[ "$SOURCE" =~ ^[a-zA-Z0-9-]+/[a-zA-Z0-9_.-]+$ ]]
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
-          docker build -t application:build "https://github.com/$SOURCE.git#$SHA"
+          source_dir=$(mktemp -d)
+          git -C "$source_dir" init -q
+          git -C "$source_dir" fetch -q --depth 1 "https://github.com/$SOURCE.git" "$SHA"
+          if git -C "$source_dir" cat-file -e 'FETCH_HEAD:Dockerfile' 2>/dev/null; then
+            docker build -t application:build "https://github.com/$SOURCE.git#$SHA"
+          else
+            site_dir=$(mktemp -d)
+            git -C "$source_dir" checkout -q --detach FETCH_HEAD
+            if [[ ! -f "$source_dir/index.html" || -L "$source_dir/index.html" ]]; then
+              echo "::error::Add an index.html at the repo root for a plain website, or add a Dockerfile for an app that needs a build or server."
+              exit 1
+            fi
+            (
+              cd "$source_dir"
+              find . -name '.*' ! -name . -prune -o -type f \( \
+                -iname '*.html' -o -iname '*.css' -o -iname '*.js' -o -iname '*.mjs' \
+                -o -iname '*.svg' -o -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
+                -o -iname '*.webp' -o -iname '*.avif' -o -iname '*.gif' -o -iname '*.ico' \
+                -o -iname '*.woff' -o -iname '*.woff2' -o -iname '*.ttf' -o -iname '*.json' \
+              \) -print0 |
+                while IFS= read -r -d '' asset; do
+                  mkdir -p -- "$site_dir/$(dirname "$asset")"
+                  cp -- "$asset" "$site_dir/$asset"
+                done
+            )
+            docker build -t application:build -f - "$site_dir" <<'DOCKERFILE'
+          FROM nginxinc/nginx-unprivileged:stable-alpine
+          COPY . /usr/share/nginx/html/
+          USER 101:101
+          EXPOSE 8080
+          DOCKERFILE
+          fi
           docker save -o "$RUNNER_TEMP/image.tar" application:build
       - uses: actions/upload-artifact@v4
         with:
