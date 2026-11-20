@@ -117,4 +117,8 @@ jobs:
           docker load -i image.tar
           docker tag application:build "$target"
           printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for delay in 5 15 30; do
+            if docker push "$target"; then exit 0; fi
+            sleep "$delay"
+          done
           docker push "$target"
